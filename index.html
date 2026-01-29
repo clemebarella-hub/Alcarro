@@ -1,0 +1,734 @@
+// =======================================================
+// FILE: package.json
+// =======================================================
+{
+  "name": "alcarro-market",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:seed": "prisma db seed"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0",
+    "next": "14.2.5",
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "prisma": "^5.20.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5"
+  },
+  "prisma": {
+    "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
+  }
+}
+
+
+// =======================================================
+// FILE: next.config.mjs
+// =======================================================
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  images: { remotePatterns: [{ protocol: "https", hostname: "picsum.photos" }] }
+};
+export default nextConfig;
+
+
+// =======================================================
+// FILE: tsconfig.json
+// =======================================================
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+
+
+// =======================================================
+// FILE: .env
+// =======================================================
+DATABASE_URL="file:./dev.db"
+
+
+// =======================================================
+// FILE: prisma/schema.prisma
+// =======================================================
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  priceCents  Int
+  currency    String   @default("CLP")
+  imageUrl    String
+  stock       Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orderItems  OrderItem[]
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  status        OrderStatus @default(PENDING_PAYMENT)
+  email         String?
+  name          String?
+  addressLine1  String?
+  city          String?
+  country       String?     @default("CL")
+  totalCents    Int         @default(0)
+  currency      String      @default("CLP")
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  items         OrderItem[]
+}
+
+model OrderItem {
+  id         String  @id @default(cuid())
+  orderId    String
+  productId  String
+  qty        Int
+  unitCents  Int
+
+  order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product    Product @relation(fields: [productId], references: [id])
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  CANCELLED
+  FULFILLED
+}
+
+
+// =======================================================
+// FILE: prisma/seed.ts
+// =======================================================
+import { PrismaClient } from "@prisma/client";
+const prisma = new PrismaClient();
+
+async function main() {
+  await prisma.product.createMany({
+    data: [
+      {
+        title: "Polera básica",
+        description: "Polera algodón, corte regular.",
+        priceCents: 12990,
+        currency: "CLP",
+        imageUrl: "https://picsum.photos/seed/polera/800/600",
+        stock: 20,
+        isActive: true
+      },
+      {
+        title: "Audífonos inalámbricos",
+        description: "Bluetooth, batería 20h.",
+        priceCents: 24990,
+        currency: "CLP",
+        imageUrl: "https://picsum.photos/seed/audifonos/800/600",
+        stock: 15,
+        isActive: true
+      },
+      {
+        title: "Mochila urbana",
+        description: "Resistente al agua, 18L.",
+        priceCents: 19990,
+        currency: "CLP",
+        imageUrl: "https://picsum.photos/seed/mochila/800/600",
+        stock: 10,
+        isActive: true
+      }
+    ]
+  });
+}
+
+main()
+  .then(() => prisma.$disconnect())
+  .catch(async (e) => {
+    console.error(e);
+    await prisma.$disconnect();
+    process.exit(1);
+  });
+
+
+// =======================================================
+// FILE: src/lib/prisma.ts
+// =======================================================
+import { PrismaClient } from "@prisma/client";
+
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: ["error"]
+  });
+
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+
+
+// =======================================================
+// FILE: src/lib/cart.ts
+// =======================================================
+export type CartItem = {
+  productId: string;
+  title: string;
+  imageUrl: string;
+  unitCents: number;
+  qty: number;
+  currency: string;
+};
+
+const KEY = "alcarro_cart_v1";
+
+export function readCart(): CartItem[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(KEY);
+    return raw ? (JSON.parse(raw) as CartItem[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function writeCart(items: CartItem[]) {
+  localStorage.setItem(KEY, JSON.stringify(items));
+}
+
+export function addToCart(item: Omit<CartItem, "qty">, qty = 1) {
+  const cart = readCart();
+  const idx = cart.findIndex((x) => x.productId === item.productId);
+  if (idx >= 0) cart[idx].qty += qty;
+  else cart.push({ ...item, qty });
+  writeCart(cart);
+  return cart;
+}
+
+export function removeFromCart(productId: string) {
+  const cart = readCart().filter((x) => x.productId !== productId);
+  writeCart(cart);
+  return cart;
+}
+
+export function updateQty(productId: string, qty: number) {
+  const cart = readCart().map((x) => (x.productId === productId ? { ...x, qty } : x));
+  writeCart(cart.filter((x) => x.qty > 0));
+  return readCart();
+}
+
+export function clearCart() {
+  writeCart([]);
+}
+
+
+// =======================================================
+// FILE: src/app/layout.tsx
+// =======================================================
+export const metadata = {
+  title: "alcarro.com",
+  description: "Marketplace base (sin pago por ahora)."
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="es">
+      <body style={{ margin: 0, fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial" }}>
+        {children}
+      </body>
+    </html>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/page.tsx
+// =======================================================
+import { prisma } from "@/lib/prisma";
+import Link from "next/link";
+
+export default async function Home() {
+  const products = await prisma.product.findMany({
+    where: { isActive: true },
+    orderBy: { createdAt: "desc" }
+  });
+
+  return (
+    <main style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h1 style={{ margin: 0 }}>alcarro.com</h1>
+        <Link href="/cart">Ir al carrito →</Link>
+      </header>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+          gap: 16,
+          marginTop: 20
+        }}
+      >
+        {products.map((p) => (
+          <Link
+            key={p.id}
+            href={`/p/${p.id}`}
+            style={{
+              border: "1px solid #ddd",
+              borderRadius: 12,
+              padding: 12,
+              textDecoration: "none",
+              color: "inherit"
+            }}
+          >
+            <img
+              src={p.imageUrl}
+              alt={p.title}
+              style={{ width: "100%", height: 160, objectFit: "cover", borderRadius: 10 }}
+            />
+            <div style={{ marginTop: 10, fontWeight: 600 }}>{p.title}</div>
+            <div style={{ opacity: 0.8 }}>
+              ${p.priceCents.toLocaleString("es-CL")} {p.currency}
+            </div>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Stock: {p.stock}</div>
+          </Link>
+        ))}
+      </div>
+    </main>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/p/[id]/page.tsx
+// =======================================================
+import { prisma } from "@/lib/prisma";
+import AddButton from "./ui/AddButton";
+
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  const p = await prisma.product.findUnique({ where: { id: params.id } });
+  if (!p || !p.isActive) return <main style={{ padding: 24 }}>Producto no encontrado.</main>;
+
+  return (
+    <main style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
+      <a href="/">← Volver</a>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginTop: 16 }}>
+        <img
+          src={p.imageUrl}
+          alt={p.title}
+          style={{ width: "100%", height: 420, objectFit: "cover", borderRadius: 14 }}
+        />
+
+        <div>
+          <h1 style={{ margin: 0 }}>{p.title}</h1>
+          <p style={{ opacity: 0.8 }}>{p.description}</p>
+
+          <div style={{ fontSize: 22, fontWeight: 700 }}>
+            ${p.priceCents.toLocaleString("es-CL")} {p.currency}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 13, opacity: 0.75 }}>Stock: {p.stock}</div>
+
+          <div style={{ marginTop: 16 }}>
+            <AddButton
+              product={{
+                id: p.id,
+                title: p.title,
+                imageUrl: p.imageUrl,
+                unitCents: p.priceCents,
+                currency: p.currency
+              }}
+              disabled={p.stock <= 0}
+            />
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/p/[id]/ui/AddButton.tsx
+// =======================================================
+"use client";
+
+import { addToCart } from "@/lib/cart";
+import { useState } from "react";
+import Link from "next/link";
+
+export default function AddButton({
+  product,
+  disabled
+}: {
+  product: { id: string; title: string; imageUrl: string; unitCents: number; currency: string };
+  disabled?: boolean;
+}) {
+  const [added, setAdded] = useState(false);
+
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+      <button
+        disabled={disabled}
+        onClick={() => {
+          addToCart(
+            {
+              productId: product.id,
+              title: product.title,
+              imageUrl: product.imageUrl,
+              unitCents: product.unitCents,
+              currency: product.currency
+            },
+            1
+          );
+          setAdded(true);
+          setTimeout(() => setAdded(false), 1200);
+        }}
+        style={{
+          padding: "10px 14px",
+          borderRadius: 10,
+          border: "1px solid #222",
+          cursor: disabled ? "not-allowed" : "pointer"
+        }}
+      >
+        {disabled ? "Sin stock" : "Agregar al carrito"}
+      </button>
+
+      <Link href="/cart">Ver carrito</Link>
+      {added && <span style={{ fontSize: 13, opacity: 0.8 }}>✓ Agregado</span>}
+    </div>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/cart/page.tsx
+// =======================================================
+import CartClient from "./ui/CartClient";
+
+export default function CartPage() {
+  return (
+    <main style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
+      <h1>Carrito</h1>
+      <CartClient />
+    </main>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/cart/ui/CartClient.tsx
+// =======================================================
+"use client";
+
+import { clearCart, readCart, removeFromCart, updateQty } from "@/lib/cart";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+
+export default function CartClient() {
+  const [items, setItems] = useState(readCart());
+
+  useEffect(() => {
+    setItems(readCart());
+  }, []);
+
+  const total = useMemo(() => items.reduce((acc, it) => acc + it.unitCents * it.qty, 0), [items]);
+
+  if (items.length === 0) {
+    return (
+      <div>
+        <p>Tu carrito está vacío.</p>
+        <Link href="/">Volver a la tienda →</Link>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "grid", gap: 12 }}>
+        {items.map((it) => (
+          <div
+            key={it.productId}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "90px 1fr auto",
+              gap: 12,
+              padding: 12,
+              border: "1px solid #ddd",
+              borderRadius: 12
+            }}
+          >
+            <img
+              src={it.imageUrl}
+              alt={it.title}
+              style={{ width: 90, height: 70, objectFit: "cover", borderRadius: 10 }}
+            />
+
+            <div>
+              <div style={{ fontWeight: 600 }}>{it.title}</div>
+              <div style={{ opacity: 0.75 }}>
+                ${it.unitCents.toLocaleString("es-CL")} {it.currency}
+              </div>
+
+              <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+                <button onClick={() => setItems(updateQty(it.productId, it.qty - 1))}>-</button>
+                <span>{it.qty}</span>
+                <button onClick={() => setItems(updateQty(it.productId, it.qty + 1))}>+</button>
+                <button onClick={() => setItems(removeFromCart(it.productId))} style={{ marginLeft: 10 }}>
+                  Quitar
+                </button>
+              </div>
+            </div>
+
+            <div style={{ fontWeight: 700 }}>${(it.unitCents * it.qty).toLocaleString("es-CL")}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 18, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <button
+          onClick={() => {
+            clearCart();
+            setItems([]);
+          }}
+        >
+          Vaciar carrito
+        </button>
+
+        <div style={{ fontSize: 18, fontWeight: 800 }}>Total: ${total.toLocaleString("es-CL")}</div>
+      </div>
+
+      <div style={{ marginTop: 18 }}>
+        <Link
+          href="/checkout"
+          style={{
+            padding: "12px 14px",
+            border: "1px solid #222",
+            borderRadius: 12,
+            display: "inline-block"
+          }}
+        >
+          Ir a checkout →
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/checkout/page.tsx
+// =======================================================
+import CheckoutClient from "./ui/CheckoutClient";
+
+export default function CheckoutPage() {
+  return (
+    <main style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
+      <h1>Checkout</h1>
+      <p style={{ opacity: 0.8 }}>
+        Esto crea la orden en estado <b>PENDING_PAYMENT</b>. Después conectas el pago.
+      </p>
+      <CheckoutClient />
+    </main>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/checkout/ui/CheckoutClient.tsx
+// =======================================================
+"use client";
+
+import { readCart, clearCart } from "@/lib/cart";
+import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+
+export default function CheckoutClient() {
+  const router = useRouter();
+  const items = readCart();
+  const total = useMemo(() => items.reduce((acc, it) => acc + it.unitCents * it.qty, 0), [items]);
+
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [addressLine1, setAddress] = useState("");
+  const [city, setCity] = useState("Santiago");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  if (items.length === 0) return <p>Tu carrito está vacío.</p>;
+
+  return (
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setErr(null);
+
+        const res = await fetch("/api/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            customer: { email, name, addressLine1, city, country: "CL" },
+            items
+          })
+        });
+
+        setLoading(false);
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setErr(data?.error ?? "Error creando la orden.");
+          return;
+        }
+
+        const data = await res.json();
+        clearCart();
+        router.push(`/success?orderId=${encodeURIComponent(data.orderId)}`);
+      }}
+      style={{ display: "grid", gap: 10, maxWidth: 520 }}
+    >
+      <label>
+        Email (opcional)
+        <input value={email} onChange={(e) => setEmail(e.target.value)} style={{ width: "100%" }} />
+      </label>
+      <label>
+        Nombre (opcional)
+        <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: "100%" }} />
+      </label>
+      <label>
+        Dirección (opcional)
+        <input value={addressLine1} onChange={(e) => setAddress(e.target.value)} style={{ width: "100%" }} />
+      </label>
+      <label>
+        Ciudad
+        <input value={city} onChange={(e) => setCity(e.target.value)} style={{ width: "100%" }} />
+      </label>
+
+      <div style={{ marginTop: 6, fontWeight: 800 }}>Total: ${total.toLocaleString("es-CL")} CLP</div>
+
+      {err && <div style={{ color: "crimson" }}>{err}</div>}
+
+      <button disabled={loading} style={{ padding: "12px 14px", borderRadius: 12, border: "1px solid #222" }}>
+        {loading ? "Creando orden..." : "Confirmar orden (sin pago)"}
+      </button>
+    </form>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/success/page.tsx
+// =======================================================
+export default function Success({ searchParams }: { searchParams: { orderId?: string } }) {
+  return (
+    <main style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
+      <h1>Orden creada ✅</h1>
+      <p>
+        Order ID: <b>{searchParams.orderId ?? "—"}</b>
+      </p>
+      <p>
+        Estado: <b>PENDING_PAYMENT</b> (cuando conectes pago, pasa a <b>PAID</b>).
+      </p>
+      <a href="/">Volver a la tienda</a>
+    </main>
+  );
+}
+
+
+// =======================================================
+// FILE: src/app/api/orders/route.ts
+// =======================================================
+import { prisma } from "@/lib/prisma";
+import { NextResponse } from "next/server";
+
+type Incoming = {
+  customer?: { email?: string; name?: string; addressLine1?: string; city?: string; country?: string };
+  items: { productId: string; qty: number; unitCents: number; currency: string }[];
+};
+
+export async function POST(req: Request) {
+  const body = (await req.json()) as Incoming;
+
+  if (!body?.items?.length) {
+    return NextResponse.json({ error: "Carrito vacío." }, { status: 400 });
+  }
+
+  const ids = body.items.map((i) => i.productId);
+  const products = await prisma.product.findMany({
+    where: { id: { in: ids }, isActive: true }
+  });
+
+  if (products.length !== ids.length) {
+    return NextResponse.json({ error: "Uno o más productos no existen." }, { status: 400 });
+  }
+
+  let totalCents = 0;
+
+  for (const it of body.items) {
+    const p = products.find((x) => x.id === it.productId)!;
+    if (it.qty <= 0) return NextResponse.json({ error: "Cantidad inválida." }, { status: 400 });
+    if (p.stock < it.qty) return NextResponse.json({ error: `Stock insuficiente: ${p.title}` }, { status: 409 });
+    totalCents += p.priceCents * it.qty;
+  }
+
+  const order = await prisma.$transaction(async (tx) => {
+    const created = await tx.order.create({
+      data: {
+        status: "PENDING_PAYMENT",
+        email: body.customer?.email ?? null,
+        name: body.customer?.name ?? null,
+        addressLine1: body.customer?.addressLine1 ?? null,
+        city: body.customer?.city ?? null,
+        country: body.customer?.country ?? "CL",
+        totalCents,
+        currency: "CLP",
+        items: {
+          create: body.items.map((it) => {
+            const p = products.find((x) => x.id === it.productId)!;
+            return { productId: p.id, qty: it.qty, unitCents: p.priceCents };
+          })
+        }
+      },
+      select: { id: true }
+    });
+
+    for (const it of body.items) {
+      await tx.product.update({
+        where: { id: it.productId },
+        data: { stock: { decrement: it.qty } }
+      });
+    }
+
+    return created;
+  });
+
+  return NextResponse.json({ orderId: order.id });
+}
